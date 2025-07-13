@@ -30,6 +30,8 @@ from nautilus_trader.adapters.binance.futures.data import BinanceFuturesDataClie
 from nautilus_trader.adapters.binance.futures.execution import BinanceFuturesExecutionClient
 from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesInstrumentProvider
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
+from nautilus_trader.adapters.binance.papi.execution import BinancePortfolioMarginExecutionClient
+from nautilus_trader.adapters.binance.papi.providers import BinancePortfolioMarginInstrumentProvider
 from nautilus_trader.adapters.binance.spot.data import BinanceSpotDataClient
 from nautilus_trader.adapters.binance.spot.execution import BinanceSpotExecutionClient
 from nautilus_trader.adapters.binance.spot.providers import BinanceSpotInstrumentProvider
@@ -110,7 +112,7 @@ def get_cached_binance_http_client(
             ("allOrders", Quota.rate_per_minute(int(3000 / 20))),
         ]
     else:
-        # Futures
+        # Futures and Portfolio Margin
         ratelimiter_default_quota = Quota.rate_per_minute(2400)
         ratelimiter_quotas = [
             ("order", Quota.rate_per_minute(1200)),
@@ -214,6 +216,46 @@ def get_cached_binance_futures_instrument_provider(
     )
 
 
+@lru_cache(1)
+def get_cached_binance_portfolio_margin_instrument_provider(
+    client: BinanceHttpClient,
+    clock: LiveClock,
+    account_type: BinanceAccountType,
+    config: InstrumentProviderConfig,
+    venue: Venue,
+) -> BinancePortfolioMarginInstrumentProvider:
+    """
+    Cache and return an instrument provider for the Binance Portfolio Margin exchange.
+
+    If a cached provider already exists, then that provider will be returned.
+
+    Parameters
+    ----------
+    client : BinanceHttpClient
+        The client for the instrument provider.
+    clock : LiveClock
+        The clock for the instrument provider.
+    account_type : BinanceAccountType
+        The Binance account type for the instrument provider.
+    config : InstrumentProviderConfig
+        The configuration for the instrument provider.
+    venue : Venue
+        The venue for the instrument provider.
+
+    Returns
+    -------
+    BinancePortfolioMarginInstrumentProvider
+
+    """
+    return BinancePortfolioMarginInstrumentProvider(
+        client=client,
+        clock=clock,
+        account_type=account_type,
+        config=config,
+        venue=venue,
+    )
+
+
 class BinanceLiveDataClientFactory(LiveDataClientFactory):
     """
     Provides a Binance live data client factory.
@@ -274,7 +316,7 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
             is_us=config.us,
         )
 
-        provider: BinanceSpotInstrumentProvider | BinanceFuturesInstrumentProvider
+        provider: BinanceSpotInstrumentProvider | BinanceFuturesInstrumentProvider | BinancePortfolioMarginInstrumentProvider
         if config.account_type.is_spot_or_margin:
             # Get instrument provider singleton
             provider = get_cached_binance_spot_instrument_provider(
@@ -287,6 +329,28 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
             )
 
             return BinanceSpotDataClient(
+                loop=loop,
+                client=client,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+                instrument_provider=provider,
+                account_type=config.account_type,
+                base_url_ws=config.base_url_ws or default_base_url_ws,
+                name=name,
+                config=config,
+            )
+        if config.account_type.is_portfolio_margin:
+            # Portfolio Margin uses specialized instrument provider for cross-market support
+            provider = get_cached_binance_portfolio_margin_instrument_provider(
+                client=client,
+                clock=clock,
+                account_type=config.account_type,
+                config=config.instrument_provider,
+                venue=config.venue,
+            )
+
+            return BinanceFuturesDataClient(
                 loop=loop,
                 client=client,
                 msgbus=msgbus,
@@ -335,7 +399,7 @@ class BinanceLiveExecClientFactory(LiveExecClientFactory):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-    ) -> BinanceSpotExecutionClient | BinanceFuturesExecutionClient:
+    ) -> BinanceSpotExecutionClient | BinanceFuturesExecutionClient | BinancePortfolioMarginExecutionClient:
         """
         Create a new Binance execution client.
 
@@ -382,7 +446,7 @@ class BinanceLiveExecClientFactory(LiveExecClientFactory):
             is_us=config.us,
         )
 
-        provider: BinanceSpotInstrumentProvider | BinanceFuturesInstrumentProvider
+        provider: BinanceSpotInstrumentProvider | BinanceFuturesInstrumentProvider | BinancePortfolioMarginInstrumentProvider
         if config.account_type.is_spot or config.account_type.is_margin:
             # Get instrument provider singleton
             provider = get_cached_binance_spot_instrument_provider(
@@ -403,6 +467,27 @@ class BinanceLiveExecClientFactory(LiveExecClientFactory):
                 instrument_provider=provider,
                 base_url_ws=config.base_url_ws or default_base_url_ws,
                 account_type=config.account_type,
+                name=name,
+                config=config,
+            )
+        elif config.account_type.is_portfolio_margin:
+            # Portfolio Margin uses specialized instrument provider for cross-market support
+            provider = get_cached_binance_portfolio_margin_instrument_provider(
+                client=client,
+                clock=clock,
+                account_type=config.account_type,
+                config=config.instrument_provider,
+                venue=config.venue,
+            )
+
+            return BinancePortfolioMarginExecutionClient(
+                loop=loop,
+                client=client,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+                instrument_provider=provider,
+                base_url_ws=config.base_url_ws or default_base_url_ws,
                 name=name,
                 config=config,
             )
